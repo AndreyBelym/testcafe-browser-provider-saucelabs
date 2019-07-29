@@ -172,12 +172,14 @@ export default {
 
     isMultiBrowser: true,
 
-    _getConnector () {
+    _getConnector (options) {
         this.connectorPromise = this.connectorPromise
             .then(async connector => {
                 if (!connector) {
                     connector = new SauceLabsConnector(process.env['SAUCE_USERNAME'], process.env['SAUCE_ACCESS_KEY'], {
-                        connectorLogging: false
+                        connectorLogging: false,
+
+                        ...options
                     });
 
                     await connector.connect();
@@ -321,15 +323,30 @@ export default {
         return capabilities;
     },
 
-    _generateCapabilities (browserName) {
-        var query        = this._createQuery(browserName);
-        var platformInfo = this._filterPlatformInfo(query)[0];
+    _generateBrowserInfo (browserName) {
+        const query        = this._createQuery(browserName);
+        const platformInfo = this._filterPlatformInfo(query)[0];
+        const alias        = this._createAliasesForPlatformInfo(platformInfo);
 
-        return platformInfo.platformGroup === 'Desktop' ?
+        const capabilities = platformInfo.platformGroup === 'Desktop' ?
             this._generateDesktopCapabilities(query) :
             this._generateMobileCapabilities(query, platformInfo);
+
+        return { alias, capabilities };
     },
 
+    async _getConfig (configPath) {
+        const rawConfig = configPath ? await getAdditionalConfig(configPath) : {};
+
+        const {
+            connectorOptions,
+            capabilitiesOverride,
+
+            ...jobOptions
+        } = rawConfig;
+
+        return { connectorOptions, capabilitiesOverride, jobOptions };
+    },
 
     // API
     async init () {
@@ -344,8 +361,9 @@ export default {
         if (!process.env['SAUCE_USERNAME'] || !process.env['SAUCE_ACCESS_KEY'])
             throw new Error(AUTH_FAILED_ERROR);
 
-        var capabilities = this._generateCapabilities(browserName);
-        var connector    = await this._getConnector();
+        const config       = await this._getConfig(process.env['SAUCE_CONFIG_PATH']);
+        const { alias, capabilities } = this._generateBrowserInfo(browserName);
+        const connector    = await this._getConnector(config.connectorOptions);
 
         await connector.waitForFreeMachines(
             SAUCE_LABS_REQUESTED_MACHINES_COUNT,
@@ -353,15 +371,14 @@ export default {
             WAIT_FOR_FREE_MACHINES_MAX_ATTEMPT_COUNT
         );
 
-        var jobOptions = Object.assign(
-            {
-                jobName: process.env['SAUCE_JOB'],
-                build:   process.env['SAUCE_BUILD']
-            },
-            process.env['SAUCE_CONFIG_PATH'] ? await getAdditionalConfig(process.env['SAUCE_CONFIG_PATH']) : {}
-        );
+        var jobOptions = {
+            name:  process.env['SAUCE_JOB'],
+            build: process.env['SAUCE_BUILD'],
 
-        var newBrowser = await connector.startBrowser(capabilities, pageUrl, jobOptions);
+            ...config.jobOptions
+        };
+
+        var newBrowser = await connector.startBrowser(this._applyOverridenCapatilities(alias, capabilities), pageUrl, jobOptions);
 
         this.openedBrowsers[id] = newBrowser;
 
